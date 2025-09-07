@@ -12,6 +12,9 @@
 #include <QtCore/QString>
 #include <QtGui/QFont>
 #include <QtGui/QScreen>
+#include <QtGui/QKeySequence>
+#include <QtGui/QShortcut>
+#include <QtCore/QTimer>
 #include <fstream>
 #include <string>
 #include <algorithm>
@@ -36,6 +39,11 @@ private:
     QPushButton* applyButton;
     QScrollArea* scrollArea;
     QClipboard* clipboard;
+
+    // Global shortcuts
+    QShortcut* globalNextShortcut;
+    QShortcut* globalPrevShortcut;
+    QShortcut* globalNewTextShortcut;
 
     void recalcChunks() {
         total_chunks = (text.length() + chunk_size - 1) / chunk_size;
@@ -79,6 +87,33 @@ private:
 
         // Copy to clipboard automatically
         clipboard->setText(QString::fromStdString(chunk));
+
+        // Flash the window to indicate global hotkey worked
+        if (!isActiveWindow()) {
+            activateWindow();
+            raise();
+            // Quick visual feedback
+            setWindowOpacity(0.9);
+            QTimer::singleShot(100, this, [this]() {
+                setWindowOpacity(1.0);
+            });
+        }
+    }
+
+    void goNext() {
+        if (tail_mode ^ inverted)
+            current_chunk = std::max(1, current_chunk - 1);
+        else
+            current_chunk = std::min(total_chunks, current_chunk + 1);
+        updateUI();
+    }
+
+    void goPrev() {
+        if (tail_mode ^ inverted)
+            current_chunk = std::min(total_chunks, current_chunk + 1);
+        else
+            current_chunk = std::max(1, current_chunk - 1);
+        updateUI();
     }
 
     void loadNewText() {
@@ -109,20 +144,12 @@ protected:
         case Qt::Key_Space:
         case Qt::Key_Return:
         case Qt::Key_Enter:
-            if (tail_mode ^ inverted)
-                current_chunk = std::max(1, current_chunk - 1);
-            else
-                current_chunk = std::min(total_chunks, current_chunk + 1);
-            updateUI();
+            goNext();
             break;
         case Qt::Key_P: // prev
         case Qt::Key_Left:
         case Qt::Key_Backspace:
-            if (tail_mode ^ inverted)
-                current_chunk = std::min(total_chunks, current_chunk + 1);
-            else
-                current_chunk = std::max(1, current_chunk - 1);
-            updateUI();
+            goPrev();
             break;
         case Qt::Key_R: // recopy
         case Qt::Key_C: // also recopy
@@ -169,10 +196,36 @@ public:
         if (tail_mode) current_chunk = total_chunks;
 
         setupUI();
+        setupGlobalShortcuts();
         updateUI();
     }
 
 private:
+    void setupGlobalShortcuts() {
+        // Global shortcut for next chunk: Ctrl+Shift+V
+        globalNextShortcut = new QShortcut(QKeySequence("Ctrl+Shift+V"), this);
+        globalNextShortcut->setContext(Qt::ApplicationShortcut);
+        connect(globalNextShortcut, &QShortcut::activated, this, &TextChunkerWindow::goNext);
+
+        // Global shortcut for previous chunk: Ctrl+Shift+P
+        globalPrevShortcut = new QShortcut(QKeySequence("Ctrl+Shift+P"), this);
+        globalPrevShortcut->setContext(Qt::ApplicationShortcut);
+        connect(globalPrevShortcut, &QShortcut::activated, this, &TextChunkerWindow::goPrev);
+
+        // Global shortcut for new text: Ctrl+Super+V (Ctrl+Meta+V on Linux)
+#ifdef Q_OS_LINUX
+        globalNewTextShortcut = new QShortcut(QKeySequence("Ctrl+Meta+V"), this);
+#elif defined(Q_OS_MAC)
+        globalNewTextShortcut = new QShortcut(QKeySequence("Ctrl+Cmd+V"), this);
+#else
+        globalNewTextShortcut = new QShortcut(QKeySequence("Ctrl+Win+V"), this);
+#endif
+        globalNewTextShortcut->setContext(Qt::ApplicationShortcut);
+        connect(globalNewTextShortcut, &QShortcut::activated, this, &TextChunkerWindow::loadNewText);
+
+        statusBar()->showMessage("Global hotkeys: Ctrl+Shift+V=Next, Ctrl+Shift+P=Prev, Ctrl+Super+V=New Text", 5000);
+    }
+
     void setupUI() {
         // Create central widget and main layout
         QWidget* central = new QWidget(this);
@@ -238,11 +291,12 @@ private:
         mainLayout->addWidget(infoLabel);
 
         // Help section - MUCH BIGGER FONT
-        helpLabel = new QLabel("⌨️  N/Space/Enter/→=Next  P/Backspace/←=Prev  R/C=Recopy  I=Invert  F/Home=First  L/End=Last  V=New Text  Q/Esc=Quit", this);
+        helpLabel = new QLabel("⌨️  Local: N/Space/Enter/→=Next  P/Backspace/←=Prev  R/C=Recopy  V=New Text  Q/Esc=Quit\n"
+                              "🌐 Global: Ctrl+Shift+V=Next  Ctrl+Shift+P=Prev  Ctrl+Super+V=New Text", this);
         helpLabel->setAlignment(Qt::AlignCenter);
         helpLabel->setWordWrap(true);
         QFont helpFont = helpLabel->font();
-        helpFont.setPointSize(14);  // Much bigger font
+        helpFont.setPointSize(13);  // Slightly smaller to fit both lines
         helpFont.setBold(true);
         helpLabel->setFont(helpFont);
         mainLayout->addWidget(helpLabel);
@@ -250,9 +304,9 @@ private:
         setCentralWidget(central);
 
         // Window setup
-        resize(1200, 800);
+        resize(1200, 850);  // Slightly taller for new help text
         setMinimumSize(800, 600);
-        setWindowTitle("Text Chunker Pro 📝");
+        setWindowTitle("Text Chunker Pro 📝 [Global Hotkeys Active]");
 
         // Dark theme styling
         setStyleSheet(R"(
@@ -314,7 +368,7 @@ private:
 
         // Setup status bar
         statusBar()->setSizeGripEnabled(true);
-        statusBar()->showMessage("Ready - Press V to load new text from clipboard");
+        statusBar()->showMessage("Ready - Global hotkeys enabled!");
 
         clipboard = QApplication::clipboard();
     }
@@ -367,4 +421,4 @@ int main(int argc, char* argv[]) {
     return app.exec();
 }
 
-#include "gui.moc"
+#include "gui.moc"  
