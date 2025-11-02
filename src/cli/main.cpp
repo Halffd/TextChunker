@@ -48,56 +48,40 @@ public:
 private:
     #ifdef __linux__
     std::string getX11Clipboard() {
-		 return "";
+        return "";
     }
     
     bool setX11Clipboard(const std::string& text) {
-        return "";
+        return false;
     }
     
-    std::string clipboard_text; // Store clipboard content
+    std::string clipboard_text;
     #endif
     
     std::string getClipboardFallback() {
-        // Try different clipboard tools
-        const char* commands[] = {
-            "xsel --clipboard --output"
-        };
+        const char* cmd = "timeout 2 xsel --clipboard --output 2>/dev/null";
         
-        for (const char* cmd : commands) {
-            FILE* pipe = popen(cmd, "r");
-            if (pipe) {
-                std::string result;
-                char buffer[4096];
-                while (fgets(buffer, sizeof(buffer), pipe)) {
-                    result += buffer;
-                }
-                int status = pclose(pipe);
-                if (status == 0 && !result.empty()) {
-                    return result;
-                }
-            }
+        FILE* pipe = popen(cmd, "r");
+        if (!pipe) return "";
+        
+        std::string result;
+        char buffer[4096];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
+            result += buffer;
         }
-        return "";
+        pclose(pipe);
+        return result;
     }
     
     bool setClipboardFallback(const std::string& text) {
-        // Try different clipboard tools
-        const char* commands[] = {
-            "xsel --clipboard --input"
-        };
+        const char* cmd = "xsel --clipboard --input";
         
-        for (const char* cmd : commands) {
-            FILE* pipe = popen(cmd, "w");
-            if (pipe) {
-                fwrite(text.c_str(), 1, text.size(), pipe);
-                int status = pclose(pipe);
-                if (status == 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
+        FILE* pipe = popen(cmd, "w");
+        if (!pipe) return false;
+        
+        fwrite(text.c_str(), 1, text.size(), pipe);
+        int status = pclose(pipe);
+        return (status == 0);
     }
 };
 
@@ -109,7 +93,7 @@ private:
     bool inverted;
     int current_chunk;
     int total_chunks;
-    std::set<std::string> used_chunks; // Track used chunks
+    std::set<std::string> used_chunks;
     std::string temp_file_path;
     ClipboardManager clipboard;
     
@@ -124,13 +108,11 @@ private:
             current_chunk = 1;
         }
         
-        // Update temp file
         updateTempFile();
     }
     
     void updateTempFile() {
         if (temp_file_path.empty()) {
-            // Create temp file path
             time_t now = time(nullptr);
             temp_file_path = "/tmp/textchunker_" + std::to_string(now) + ".txt";
         }
@@ -139,7 +121,6 @@ private:
         if (temp_file.is_open()) {
             temp_file << text;
             temp_file.close();
-            std::cout << "Text saved to: " << temp_file_path << std::endl;
         }
     }
     
@@ -153,28 +134,28 @@ private:
     
     int findNextUnusedChunk() {
         int start_chunk = current_chunk;
+        int attempts = 0;
+        int max_attempts = total_chunks;
         
-        do {
+        while (attempts < max_attempts) {
             std::string chunk = getChunkAtPosition(current_chunk);
             if (!isChunkUsed(chunk)) {
                 return current_chunk;
             }
             
-            // Move to next chunk
             if (tail_mode ^ inverted) {
-                current_chunk = std::max(1, current_chunk - 1);
+                current_chunk--;
+                if (current_chunk < 1) current_chunk = total_chunks;
             } else {
-                current_chunk = std::min(total_chunks, current_chunk + 1);
+                current_chunk++;
+                if (current_chunk > total_chunks) current_chunk = 1;
             }
             
-            // If we've wrapped around, break
-            if (current_chunk == start_chunk) {
-                break;
-            }
-            
-        } while (true);
+            attempts++;
+        }
         
-        return -1; // No unused chunks found
+        current_chunk = start_chunk;
+        return -1;
     }
     
     std::string getChunkAtPosition(int pos) {
@@ -200,7 +181,6 @@ public:
         chunk_size(size), tail_mode(tail), inverted(false), current_chunk(1) {}
     
     ~TextChunker() {
-        // Optionally clean up temp file
         if (!temp_file_path.empty()) {
             std::cout << "Temp file preserved at: " << temp_file_path << std::endl;
         }
@@ -235,45 +215,85 @@ public:
         return true;
     }
     
-    void appendText() {
-        std::cout << "Enter additional text (end with Ctrl+D or empty line):" << std::endl;
-        std::string line, additional_text;
-        
-        while (std::getline(std::cin, line)) {
-            if (line.empty()) break;
-            additional_text += line + "\n";
+    void appendTextFromClipboard() {
+        std::string clipboard_text = clipboard.getClipboard();
+        if (clipboard_text.empty()) {
+            std::cout << "⚠ Clipboard is empty" << std::endl;
+            return;
         }
         
-        if (!additional_text.empty()) {
-            text += additional_text;
-            recalculateChunks();
-            std::cout << "Added " << additional_text.length() << " characters." << std::endl;
+        text += clipboard_text;
+        used_chunks.clear();
+        recalculateChunks();
+        std::cout << "✓ Added " << clipboard_text.length() << " characters from clipboard." << std::endl;
+        std::cout << "✓ Reset usage tracking (now " << total_chunks << " total chunks)" << std::endl;
+    }
+    
+    void replaceTextFromClipboard() {
+        std::string clipboard_text = clipboard.getClipboard();
+        if (clipboard_text.empty()) {
+            std::cout << "⚠ Clipboard is empty" << std::endl;
+            return;
         }
+        
+        text = clipboard_text;
+        used_chunks.clear();
+        current_chunk = tail_mode ? total_chunks : 1;
+        recalculateChunks();
+        std::cout << "✓ Replaced text with " << text.length() << " characters from clipboard." << std::endl;
+        std::cout << "✓ Reset to chunk " << current_chunk << " of " << total_chunks << std::endl;
+    }
+    
+    void clearText() {
+        text.clear();
+        used_chunks.clear();
+        current_chunk = 1;
+        total_chunks = 0;
+        std::cout << "✓ Text cleared" << std::endl;
+    }
+    
+    void showCurrentText() {
+        if (text.empty()) {
+            std::cout << "Text is empty" << std::endl;
+            return;
+        }
+        
+        std::cout << "\n--- Current Text (" << text.length() << " bytes) ---" << std::endl;
+        
+        // Show first 500 chars
+        size_t preview_size = std::min(size_t(500), text.length());
+        std::cout << text.substr(0, preview_size);
+        
+        if (text.length() > preview_size) {
+            std::cout << "\n... (" << (text.length() - preview_size) << " more bytes) ...";
+        }
+        
+        std::cout << "\n--- End of Preview ---\n" << std::endl;
     }
     
     std::string getCurrentChunk() {
         return getChunkAtPosition(current_chunk);
     }
     
-    void copyToClipboard() {
+    void copyToClipboard(bool force_current = false) {
         std::string chunk = getCurrentChunk();
-        if (!chunk.empty()) {
-            if (!isChunkUsed(chunk)) {
+        if (chunk.empty()) return;
+        
+        if (force_current || !isChunkUsed(chunk)) {
+            clipboard.setClipboard(chunk);
+            markChunkAsUsed(chunk);
+            std::cout << "✓ Chunk copied to clipboard" << std::endl;
+        } else {
+            std::cout << "⚠ Chunk already used - finding next unused chunk..." << std::endl;
+            int next_unused = findNextUnusedChunk();
+            if (next_unused != -1) {
+                current_chunk = next_unused;
+                chunk = getCurrentChunk();
                 clipboard.setClipboard(chunk);
                 markChunkAsUsed(chunk);
-                std::cout << "✓ Chunk copied to clipboard" << std::endl;
+                std::cout << "✓ Found unused chunk " << current_chunk << std::endl;
             } else {
-                std::cout << "⚠ Chunk already used - finding next unused chunk..." << std::endl;
-                int next_unused = findNextUnusedChunk();
-                if (next_unused != -1) {
-                    current_chunk = next_unused;
-                    chunk = getCurrentChunk();
-                    clipboard.setClipboard(chunk);
-                    markChunkAsUsed(chunk);
-                    std::cout << "✓ Found unused chunk " << current_chunk << std::endl;
-                } else {
-                    std::cout << "⚠ All chunks have been used" << std::endl;
-                }
+                std::cout << "⚠ All chunks have been used" << std::endl;
             }
         }
     }
@@ -289,13 +309,14 @@ public:
     }
     
     bool processCommand(const std::string& cmd) {
+        bool manual_navigation = false;
+        
         if (cmd.empty()) {
-            // Default: next unused chunk
+            // Enter: advance to next unused
             int next_unused = findNextUnusedChunk();
             if (next_unused != -1) {
                 current_chunk = next_unused;
             } else {
-                // Move to next chunk anyway
                 if (tail_mode ^ inverted) {
                     current_chunk = std::max(1, current_chunk - 1);
                 } else {
@@ -303,65 +324,75 @@ public:
                 }
             }
         } else if (cmd == "A" || cmd == "a") {
-            // Add more text
-            appendText();
+            appendTextFromClipboard();
+            return true;
+        } else if (cmd == "V" || cmd == "v") {
+            replaceTextFromClipboard();
+            return true;
+        } else if (cmd == "C" || cmd == "c") {
+            clearText();
+            return true;
+        } else if (cmd == "S" || cmd == "s") {
+            showCurrentText();
             return true;
         } else if (cmd == "R" || cmd == "r") {
-            // Recopy current chunk (force copy even if used)
             std::string chunk = getCurrentChunk();
             if (!chunk.empty()) {
                 clipboard.setClipboard(chunk);
                 std::cout << "✓ Chunk recopied to clipboard" << std::endl;
             }
+            return true;
         } else if (cmd == "U" || cmd == "u") {
-            // Show unused chunks count
             std::cout << "Used chunks: " << used_chunks.size() 
                       << "/" << total_chunks << std::endl;
             return true;
         } else if (cmd == "reset") {
-            // Reset used chunks
             used_chunks.clear();
-            std::cout << "Reset all chunks as unused" << std::endl;
+            std::cout << "✓ Reset all chunks as unused" << std::endl;
             return true;
         } else if (cmd == "P" || cmd == "p") {
+            manual_navigation = true;
             if (tail_mode ^ inverted) {
                 current_chunk = std::min(total_chunks, current_chunk + 1);
             } else {
                 current_chunk = std::max(1, current_chunk - 1);
             }
         } else if (cmd == "N" || cmd == "n") {
+            manual_navigation = true;
             if (tail_mode ^ inverted) {
                 current_chunk = std::max(1, current_chunk - 1);
             } else {
                 current_chunk = std::min(total_chunks, current_chunk + 1);
             }
         } else if (cmd == "F" || cmd == "f") {
+            manual_navigation = true;
             current_chunk = (tail_mode ^ inverted) ? total_chunks : 1;
         } else if (cmd == "L" || cmd == "l") {
+            manual_navigation = true;
             current_chunk = (tail_mode ^ inverted) ? 1 : total_chunks;
         } else if (cmd == "I" || cmd == "i") {
-            // Invert order
             inverted = !inverted;
             current_chunk = total_chunks - current_chunk + 1;
+            std::cout << "✓ Inverted order" << std::endl;
+            return true;
         } else if (cmd[0] == '$' && cmd.length() > 1 && 
                    std::all_of(cmd.begin() + 1, cmd.end(), ::isdigit)) {
-            // Change chunk size: $number
             size_t new_size = std::stoul(cmd.substr(1));
             if (new_size > 0 && new_size <= text.length()) {
                 std::cout << "Changing chunk size from " << chunk_size 
                           << " to " << new_size << " characters" << std::endl;
                 chunk_size = new_size;
-                used_chunks.clear(); // Reset used chunks when size changes
+                used_chunks.clear();
                 recalculateChunks();
             } else {
                 std::cout << "Invalid chunk size. Must be > 0 and <= text length (" 
                           << text.length() << ")" << std::endl;
-                return true;
             }
+            return true;
         } else if (cmd == "q" || cmd == "Q" || cmd == "quit") {
             return false;
         } else if (std::all_of(cmd.begin(), cmd.end(), ::isdigit)) {
-            // Go to specific chunk number
+            manual_navigation = true;
             int target = std::stoi(cmd);
             if (target >= 1 && target <= total_chunks) {
                 current_chunk = target;
@@ -372,7 +403,9 @@ public:
         } else {
             std::cout << "Commands:" << std::endl;
             std::cout << "  Enter=next unused, R=recopy, P=prev, N=next" << std::endl;
-            std::cout << "  F=first, L=last, I=invert, A=add text" << std::endl;
+            std::cout << "  F=first, L=last, I=invert" << std::endl;
+            std::cout << "  A=append from clipboard, V=replace from clipboard" << std::endl;
+            std::cout << "  C=clear text, S=show current text" << std::endl;
             std::cout << "  U=show usage, reset=reset usage, #=goto, $#=resize" << std::endl;
             std::cout << "  Q=quit" << std::endl;
             return true;
@@ -382,11 +415,16 @@ public:
         if (current_chunk < 1) current_chunk = 1;
         if (current_chunk > total_chunks) current_chunk = total_chunks;
         
+        // Don't auto-copy for manual navigation commands
+        if (manual_navigation) {
+            return true;
+        }
+        
         return true;
     }
     
     bool hasUnusedChunks() {
-        return used_chunks.size() < total_chunks;
+        return used_chunks.size() < static_cast<size_t>(total_chunks);
     }
     
     bool isAtFinalChunk() {
@@ -399,16 +437,22 @@ public:
     
     void run() {
         std::string input;
-        bool auto_exit = false;
+        bool first_iteration = true;
         
         while (true) {
-            copyToClipboard();
+            // Auto-copy only on first iteration or after Enter (empty command)
+            if (first_iteration || input.empty()) {
+                copyToClipboard();
+                first_iteration = false;
+            }
+            
             showStatus();
             
             // Check if we're at the final chunk and should auto-exit
             if (isAtFinalChunk() && !hasUnusedChunks()) {
                 std::cout << "✓ All chunks processed. Auto-exiting..." << std::endl;
-                auto_exit = true;
+                std::cout << "Session completed successfully!" << std::endl;
+                std::cout << "Processed " << used_chunks.size() << "/" << total_chunks << " chunks" << std::endl;
                 break;
             }
             
@@ -417,7 +461,7 @@ public:
                 std::cout << "⚠ All chunks have been used!" << std::endl;
             }
             
-            std::cout << "Command (Enter=next unused, R=recopy, P=prev, N=next, F=first, L=last, I=invert, A=add, U=usage, Q=quit): ";
+            std::cout << "Command (Enter=next unused, R=recopy, P=prev, N=next, F=first, L=last, I=invert, A=append, V=replace, C=clear, S=show, U=usage, Q=quit): ";
             
             std::getline(std::cin, input);
             
@@ -425,17 +469,17 @@ public:
                 break;
             }
             
+            // Check if text was cleared
+            if (text.empty()) {
+                std::cout << "Text is empty. Exiting..." << std::endl;
+                break;
+            }
+            
             // After processing command, check for auto-exit condition again
             if (isAtFinalChunk() && getCurrentChunk().empty()) {
                 std::cout << "✓ Reached end of text. Auto-exiting..." << std::endl;
-                auto_exit = true;
                 break;
             }
-        }
-        
-        if (auto_exit) {
-            std::cout << "Session completed successfully!" << std::endl;
-            std::cout << "Processed " << used_chunks.size() << "/" << total_chunks << " chunks" << std::endl;
         }
     }
 };
@@ -459,7 +503,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Features:" << std::endl;
             std::cout << "  - Native X11/Wayland clipboard support" << std::endl;
             std::cout << "  - Prevents duplicate chunks" << std::endl;
-            std::cout << "  - Add text during operation with 'A'" << std::endl;
+            std::cout << "  - Add/Replace text from clipboard (A/V)" << std::endl;
+            std::cout << "  - Clear text (C) and show preview (S)" << std::endl;
             std::cout << "  - Auto-saves to /tmp file" << std::endl;
             std::cout << "  - Auto-exits when all chunks processed" << std::endl;
             return 0;
@@ -487,7 +532,7 @@ int main(int argc, char* argv[]) {
     
     std::cout << "Text chunker loaded. Mode: " << (tail_mode ? "tail" : "head") 
               << ", Chunk size: " << chunk_size << " chars" << std::endl;
-    std::cout << "Features: Duplicate prevention, Text addition (A), Auto-save to /tmp" << std::endl;
+    std::cout << "Features: Duplicate prevention, Clipboard ops (A/V/C/S), Auto-save to /tmp" << std::endl;
     std::cout << std::endl;
     
     chunker.run();
