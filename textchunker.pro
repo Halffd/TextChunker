@@ -14,4 +14,4 @@ INCLUDEPATH += .
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 # Input
-SOURCES += src/gui.cpp src/cli/cli.cpp src/cli/xcli.cpp
+SOURCES += src/main.cpp
