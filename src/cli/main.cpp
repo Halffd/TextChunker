@@ -9,57 +9,110 @@
 #include <sstream>
 #include <ctime>
 #include <unistd.h>
+#include <cstring>
 
 using str = std::string;
 
 class ClipboardManager {
 private:
     bool x11_available;
-    
+    bool wayland_available;
+
 public:
-    ClipboardManager() : x11_available(false) {
+    ClipboardManager() : x11_available(false), wayland_available(false) {
+        // Check for Wayland availability
+        const char* wayland_display = getenv("WAYLAND_DISPLAY");
+        if (wayland_display && strlen(wayland_display) > 0) {
+            wayland_available = true;
+        } else {
+            // Check for X11 availability
+            const char* x11_display = getenv("DISPLAY");
+            if (x11_display && strlen(x11_display) > 0) {
+                x11_available = true;
+            }
+        }
+        std::cout << "X11 available: " << (x11_available ? "yes" : "no") << std::endl;
+        std::cout << "Wayland available: " << (wayland_available ? "yes" : "no") << std::endl;
     }
-    
+
     ~ClipboardManager() {
     }
-    
+
     std::string getClipboard() {
         #ifdef __linux__
-        if (x11_available) {
-            return getX11Clipboard();
+        if (wayland_available) {
+            return getWaylandClipboard();
+        } else if (x11_available) {
+            // Fallback to external tools
+            return getClipboardFallback();
+            // return getX11Clipboard();
         }
         #endif
-        
-        // Fallback to external tools
-        return getClipboardFallback();
+
     }
-    
+
     bool setClipboard(const std::string& text) {
         #ifdef __linux__
-        if (x11_available) {
-            return setX11Clipboard(text);
+        if (wayland_available) {
+            return setWaylandClipboard(text);
+        } else if (x11_available) {
+            // Fallback to external tools
+            return setClipboardFallback(text);
+            // return setX11Clipboard(text);
         }
         #endif
-        
-        // Fallback to external tools
-        return setClipboardFallback(text);
+
     }
 
 private:
     #ifdef __linux__
     std::string getX11Clipboard() {
-        return "";
+        
     }
-    
+
     bool setX11Clipboard(const std::string& text) {
         return false;
     }
-    
+
+    std::string getWaylandClipboard() {
+        const char* cmd = "timeout 2 wl-paste --primary 2>/dev/null || timeout 2 wl-paste 2>/dev/null";
+
+        FILE* pipe = popen(cmd, "r");
+        if (!pipe) return "";
+
+        std::string result;
+        char buffer[4096];
+        while (fgets(buffer, sizeof(buffer), pipe)) {
+            result += buffer;
+        }
+        pclose(pipe);
+        return result;
+    }
+
+    bool setWaylandClipboard(const std::string& text) {
+        const char* cmd_primary = "wl-copy --primary";
+        const char* cmd_clipboard = "wl-copy";
+
+        // Copy to primary selection
+        FILE* pipe = popen(cmd_primary, "w");
+        if (!pipe) return false;
+        fwrite(text.c_str(), 1, text.size(), pipe);
+        int status = pclose(pipe);
+        if (status != 0) return false;
+
+        // Copy to clipboard selection
+        pipe = popen(cmd_clipboard, "w");
+        if (!pipe) return false;
+        fwrite(text.c_str(), 1, text.size(), pipe);
+        status = pclose(pipe);
+        return (status == 0);
+    }
+
     std::string clipboard_text;
     #endif
     
     std::string getClipboardFallback() {
-        const char* cmd = "timeout 2 xsel --clipboard --output 2>/dev/null";
+        const char* cmd = "timeout 5 xsel --clipboard --output 2>/dev/null";
         
         FILE* pipe = popen(cmd, "r");
         if (!pipe) return "";
@@ -96,6 +149,7 @@ private:
     std::set<std::string> used_chunks;
     std::string temp_file_path;
     ClipboardManager clipboard;
+    size_t show_preview_size;  // Track how much of the text to show with S command
     
     void recalculateChunks() {
         total_chunks = (text.length() + chunk_size - 1) / chunk_size;
@@ -112,15 +166,13 @@ private:
     }
     
     void updateTempFile() {
-        if (temp_file_path.empty()) {
-            time_t now = time(nullptr);
-            temp_file_path = "/tmp/textchunker_" + std::to_string(now) + ".txt";
-        }
-        
-        std::ofstream temp_file(temp_file_path);
-        if (temp_file.is_open()) {
-            temp_file << text;
-            temp_file.close();
+        // Just update the existing temp file with current text
+        if (!temp_file_path.empty()) {
+            std::ofstream temp_file(temp_file_path);
+            if (temp_file.is_open()) {
+                temp_file << text;
+                temp_file.close();
+            }
         }
     }
     
@@ -177,8 +229,12 @@ private:
     }
     
 public:
-    TextChunker(bool tail, size_t size) : 
-        chunk_size(size), tail_mode(tail), inverted(false), current_chunk(1) {}
+    TextChunker(bool tail, size_t size) :
+        chunk_size(size), tail_mode(tail), inverted(false), current_chunk(1), show_preview_size(500) {
+        // Create temp file at the start
+        time_t now = time(nullptr);
+        temp_file_path = "/tmp/textchunker_" + std::to_string(now) + ".txt";
+    }
     
     ~TextChunker() {
         if (!temp_file_path.empty()) {
@@ -257,18 +313,21 @@ public:
             std::cout << "Text is empty" << std::endl;
             return;
         }
-        
+
         std::cout << "\n--- Current Text (" << text.length() << " bytes) ---" << std::endl;
-        
-        // Show first 500 chars
-        size_t preview_size = std::min(size_t(500), text.length());
+
+        // Show incrementally more content each time S is pressed
+        size_t preview_size = std::min(show_preview_size, text.length());
         std::cout << text.substr(0, preview_size);
-        
+
         if (text.length() > preview_size) {
             std::cout << "\n... (" << (text.length() - preview_size) << " more bytes) ...";
         }
-        
+
         std::cout << "\n--- End of Preview ---\n" << std::endl;
+
+        // Increment the preview size for next time, but cap it at a reasonable amount
+        show_preview_size = std::min(show_preview_size * 2, std::max(text.length(), size_t(5000)));
     }
     
     std::string getCurrentChunk() {
@@ -353,16 +412,16 @@ public:
         } else if (cmd == "P" || cmd == "p") {
             manual_navigation = true;
             if (tail_mode ^ inverted) {
-                current_chunk = std::min(total_chunks, current_chunk + 1);
+                current_chunk = std::min(total_chunks, current_chunk + 1);  // In tail mode, previous means going back toward start (increasing index)
             } else {
-                current_chunk = std::max(1, current_chunk - 1);
+                current_chunk = std::max(1, current_chunk - 1);  // In head mode, previous means going back toward start (decreasing index)
             }
         } else if (cmd == "N" || cmd == "n") {
             manual_navigation = true;
             if (tail_mode ^ inverted) {
-                current_chunk = std::max(1, current_chunk - 1);
+                current_chunk = std::max(1, current_chunk - 1);  // In tail mode, next means going toward end (decreasing index)
             } else {
-                current_chunk = std::min(total_chunks, current_chunk + 1);
+                current_chunk = std::min(total_chunks, current_chunk + 1);  // In head mode, next means going toward end (increasing index)
             }
         } else if (cmd == "F" || cmd == "f") {
             manual_navigation = true;
@@ -438,47 +497,57 @@ public:
     void run() {
         std::string input;
         bool first_iteration = true;
-        
+
+        int last_used_count = 0;  // Track how many chunks were used before processing Enter
+
         while (true) {
             // Auto-copy only on first iteration or after Enter (empty command)
             if (first_iteration || input.empty()) {
+                last_used_count = used_chunks.size();  // Remember count before copying
                 copyToClipboard();
                 first_iteration = false;
             }
-            
+
             showStatus();
-            
+
             // Check if we're at the final chunk and should auto-exit
             if (isAtFinalChunk() && !hasUnusedChunks()) {
                 std::cout << "✓ All chunks processed. Auto-exiting..." << std::endl;
                 std::cout << "Session completed successfully!" << std::endl;
-                std::cout << "Processed " << used_chunks.size() << "/" << total_chunks << " chunks" << std::endl;
+                size_t unique_used = std::min(used_chunks.size(), static_cast<size_t>(total_chunks));
+                std::cout << "Used " << unique_used << "/" << total_chunks << " unique chunks" << std::endl;
                 break;
             }
-            
+
             // Check if all chunks are used
             if (!hasUnusedChunks()) {
                 std::cout << "⚠ All chunks have been used!" << std::endl;
             }
-            
+
             std::cout << "Command (Enter=next unused, R=recopy, P=prev, N=next, F=first, L=last, I=invert, A=append, V=replace, C=clear, S=show, U=usage, Q=quit): ";
-            
+
             std::getline(std::cin, input);
-            
+
             if (!processCommand(input)) {
                 break;
             }
-            
+
             // Check if text was cleared
             if (text.empty()) {
                 std::cout << "Text is empty. Exiting..." << std::endl;
                 break;
             }
-            
-            // After processing command, check for auto-exit condition again
-            if (isAtFinalChunk() && getCurrentChunk().empty()) {
-                std::cout << "✓ Reached end of text. Auto-exiting..." << std::endl;
-                break;
+
+            // After processing command, if Enter was pressed and no new chunk was used, skip navigation
+            if (input.empty() && used_chunks.size() == last_used_count && !hasUnusedChunks()) {
+                // User pressed Enter but no new chunk was used (all chunks already used)
+                // Skip the default navigation behavior
+            } else {
+                // After processing command, check for auto-exit condition again
+                if (isAtFinalChunk() && getCurrentChunk().empty()) {
+                    std::cout << "✓ Reached end of text. Auto-exiting..." << std::endl;
+                    break;
+                }
             }
         }
     }
@@ -488,16 +557,16 @@ int main(int argc, char* argv[]) {
     bool tail_mode = false;
     size_t chunk_size = 20000;
     std::string filename;
-    
+
     std::cout << "Text Chunker with Native Clipboard Support" << std::endl;
     std::cout << "==========================================" << std::endl;
-    
+
     // Parse arguments
     if (argc > 1) {
         if (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h") {
-            std::cout << "Usage: " << argv[0] << " [tail_mode] [chunk_size] [filename]" << std::endl;
-            std::cout << "  tail_mode: 0 for head mode, 1 for tail mode (default: 0)" << std::endl;
+            std::cout << "Usage: " << argv[0] << " [chunk_size] [tail_mode] [filename]" << std::endl;
             std::cout << "  chunk_size: size of each chunk in characters (default: 20000)" << std::endl;
+            std::cout << "  tail_mode: 0 for head mode, 1 for tail mode (default: 0)" << std::endl;
             std::cout << "  filename: file to read from (default: clipboard)" << std::endl;
             std::cout << std::endl;
             std::cout << "Features:" << std::endl;
@@ -509,17 +578,19 @@ int main(int argc, char* argv[]) {
             std::cout << "  - Auto-exits when all chunks processed" << std::endl;
             return 0;
         }
-        tail_mode = (std::string(argv[1]) == "1");
-    }
-    
-    if (argc > 2) {
-        chunk_size = std::stoul(argv[2]);
+
+        // First argument is now chunk_size
+        chunk_size = std::stoul(argv[1]);
         if (chunk_size == 0) {
             std::cerr << "Error: Chunk size must be > 0" << std::endl;
             return 1;
         }
     }
-    
+
+    if (argc > 2) {
+        tail_mode = (std::string(argv[2]) == "1");
+    }
+
     if (argc > 3) {
         filename = argv[3];
     }
