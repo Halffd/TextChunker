@@ -44,11 +44,11 @@ struct Config {
   bool auto_exit = false;
   bool tray_mode = false;
   bool gui_hidden = false;
-  double opacity = 1.0;
-  int gui_width = 8600;
+  double opacity = 0.6;
+  int gui_width = 800;
   int gui_height = 400;
-  int gui_x = -1;    // -1 means center
-  int gui_y = -1;    // -1 means center
+  int gui_x = -1;      // -1 means center
+  int gui_y = -1;      // -1 means center
   int gui_monitor = 0; // 0 is primary monitor
   std::vector<std::string> regex_patterns;
   bool filter_mode = false;
@@ -322,6 +322,12 @@ private:
                                  .arg(current_chunk)
                                  .arg(total_chunks)
                                  .arg(chunk.length()));
+    if (((current_chunk == total_chunks && !inverted) ||
+         (current_chunk == 0 && inverted)) &&
+        config.auto_exit) {
+      sleep(3);
+      QApplication::quit();
+    }
   }
 
   void goNext() {
@@ -929,7 +935,7 @@ int main(int argc, char *argv[]) {
     } else if (arg == "--tail" || arg == "-t") {
       config.tail_mode = true;
     } else if (arg == "--auto-exit" || arg == "-x") {
-      config.auto_exit = true;
+      config.auto_exit = !config.auto_exit;
     } else if (arg == "--tray" || arg == "-y") {
       config.tray_mode = true;
     } else if (arg == "--hidden" || arg == "-d") {
@@ -1059,13 +1065,19 @@ int main(int argc, char *argv[]) {
   window.show();
 
   // Position the window
-  QList<QScreen*> screens = QGuiApplication::screens();
-  int monitor_index = std::max(0, std::min(config.gui_monitor, (int)screens.size() - 1));
+  QList<QScreen *> screens = QGuiApplication::screens();
+  int monitor_index =
+      std::max(0, std::min(config.gui_monitor, (int)screens.size() - 1));
   QScreen *screen = screens[monitor_index];
   QRect screenGeometry = screen->geometry();
 
-  int x = (config.gui_x >= 0) ? (screenGeometry.x() + config.gui_x) : (screenGeometry.x() + (screenGeometry.width() - window.width()) / 2);
-  int y = (config.gui_y >= 0) ? (screenGeometry.y() + config.gui_y) : (screenGeometry.y() + (screenGeometry.height() - window.height()) / 2);
+  int x = (config.gui_x >= 0) ? (screenGeometry.x() + config.gui_x)
+                              : (screenGeometry.x() +
+                                 (screenGeometry.width() - window.width()) / 2);
+  int y = (config.gui_y >= 0)
+              ? (screenGeometry.y() + config.gui_y)
+              : (screenGeometry.y() +
+                 (screenGeometry.height() - window.height()) / 2);
 
   window.move(x, y);
 
