@@ -37,6 +37,55 @@
 #include <string>
 #include <unistd.h>
 #include <vector>
+// UTF-8 sanitization: replace invalid sequences with U+FFFD
+std::string sanitizeUtf8(const std::string &input) {
+  std::string result;
+  result.reserve(input.size());
+  for (size_t i = 0; i < input.size();) {
+    unsigned char c = input[i];
+    if (c <= 0x7F) {
+      result.push_back(c);
+      i++;
+    } else if ((c & 0xE0) == 0xC0) {
+      if (i + 1 < input.size() && (input[i + 1] & 0xC0) == 0x80) {
+        result.push_back(c);
+        result.push_back(input[i + 1]);
+        i += 2;
+      } else {
+        result.append("\xEF\xBF\xBD");
+        i++;
+      }
+    } else if ((c & 0xF0) == 0xE0) {
+      if (i + 2 < input.size() && (input[i + 1] & 0xC0) == 0x80 &&
+          (input[i + 2] & 0xC0) == 0x80) {
+        result.push_back(c);
+        result.push_back(input[i + 1]);
+        result.push_back(input[i + 2]);
+        i += 3;
+      } else {
+        result.append("\xEF\xBF\xBD");
+        i++;
+      }
+    } else if ((c & 0xF8) == 0xF0) {
+      if (i + 3 < input.size() && (input[i + 1] & 0xC0) == 0x80 &&
+          (input[i + 2] & 0xC0) == 0x80 && (input[i + 3] & 0xC0) == 0x80) {
+        result.push_back(c);
+        result.push_back(input[i + 1]);
+        result.push_back(input[i + 2]);
+        result.push_back(input[i + 3]);
+        i += 4;
+      } else {
+        result.append("\xEF\xBF\xBD");
+        i++;
+      }
+    } else {
+      result.append("\xEF\xBF\xBD");
+      i++;
+    }
+  }
+  return result;
+}
+
 // Configuration structure
 struct Config {
   size_t chunk_size = 20000;
@@ -294,7 +343,7 @@ private:
 
   void updateUI() {
     std::string chunk = getDisplayChunk(current_chunk);
-    chunkLabel->setText(QString::fromStdString(chunk));
+    chunkLabel->setText(QString::fromUtf8(chunk.data(), chunk.size()));
 
     QString info = QString("Chunk %1/%2 | %3 total chars")
                        .arg(current_chunk)
@@ -331,7 +380,7 @@ private:
 
   void copyCurrentChunk() {
     std::string chunk = getDisplayChunk(current_chunk);
-    clipboard->setText(QString::fromStdString(chunk));
+    clipboard->setText(QString::fromUtf8(chunk.data(), chunk.size()));
     statusBar()->showMessage("Copied current chunk to clipboard", 2000);
   }
 
@@ -360,7 +409,7 @@ private:
   }
 
   void loadNewText() {
-    std::string newText = clipboard->text().toStdString();
+    std::string newText = sanitizeUtf8(clipboard->text().toStdString());
     if (newText.empty()) {
       statusBar()->showMessage("No text in clipboard!", 3000);
       return;
@@ -379,7 +428,7 @@ private:
   }
 
   void appendText() {
-    std::string newText = clipboard->text().toStdString();
+    std::string newText = sanitizeUtf8(clipboard->text().toStdString());
     if (newText.empty()) {
       statusBar()->showMessage("No text in clipboard!", 3000);
       return;
@@ -392,7 +441,7 @@ private:
   }
 
   void replaceText() {
-    std::string newText = clipboard->text().toStdString();
+    std::string newText = sanitizeUtf8(clipboard->text().toStdString());
     if (newText.empty()) {
       statusBar()->showMessage("No text in clipboard!", 3000);
       return;
@@ -1045,15 +1094,16 @@ int main(int argc, char *argv[]) {
     }
     inputText.assign((std::istreambuf_iterator<char>(file)),
                      std::istreambuf_iterator<char>());
+    inputText = sanitizeUtf8(inputText);
   } else {
     // Try to read from stdin first (if piped)
     if (!isatty(fileno(stdin))) {
-      inputText = readStdin();
+      inputText = sanitizeUtf8(readStdin());
     }
 
     // If no stdin data, use clipboard
     if (inputText.empty()) {
-      inputText = QApplication::clipboard()->text().toStdString();
+      inputText = sanitizeUtf8(QApplication::clipboard()->text().toStdString());
     }
   }
 
