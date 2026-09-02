@@ -317,7 +317,6 @@ private:
 
     infoLabel->setText(info);
 
-    clipboard->setText(QString::fromStdString(chunk));
     statusBar()->showMessage(QString("Chunk %1/%2 • %3 characters")
                                  .arg(current_chunk)
                                  .arg(total_chunks)
@@ -328,6 +327,12 @@ private:
       sleep(3);
       QApplication::quit();
     }
+  }
+
+  void copyCurrentChunk() {
+    std::string chunk = getDisplayChunk(current_chunk);
+    clipboard->setText(QString::fromStdString(chunk));
+    statusBar()->showMessage("Copied current chunk to clipboard", 2000);
   }
 
   void goNext() {
@@ -536,9 +541,7 @@ protected:
       break;
     case Qt::Key_R:
     case Qt::Key_C:
-      clipboard->setText(
-          QString::fromStdString(getDisplayChunk(current_chunk)));
-      statusBar()->showMessage("Recopied to clipboard", 2000);
+      copyCurrentChunk();
       break;
     case Qt::Key_I:
       inverted = !inverted;
